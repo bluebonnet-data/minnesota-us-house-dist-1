@@ -1,0 +1,17 @@
+project:
+  name: ""
+  description: ""
+  tools: []
+  current_focus: ""
+  needs: []
+  links:
+    docs: ""
+    staging: ""
+    production: ""
+  team:
+    lead: ""
+    contributors: []
+  campaign:
+    candidate: ""
+    office: ""
+  auto_refresh: true
