@@ -1,17 +1,18 @@
 project:
-  name: ""
-  description: ""
+  name: Jake Johnson
+  description: ''
   tools: []
-  current_focus: ""
+  current_focus: ''
   needs: []
   links:
-    docs: ""
-    staging: ""
-    production: ""
+    docs: ''
+    staging: ''
+    production: ''
   team:
-    lead: ""
-    contributors: []
+    lead: willlevinson
+    contributors:
+    - pauldingus
   campaign:
-    candidate: ""
-    office: ""
+    candidate: Jake Johnson
+    office: Minnesota US House District 1
   auto_refresh: true
