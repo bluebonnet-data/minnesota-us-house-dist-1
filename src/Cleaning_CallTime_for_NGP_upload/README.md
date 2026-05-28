@@ -14,6 +14,12 @@ These files are an intermediate step between exporting and importing. I have not
 
 Importantly, this does NOT go the other way. We need to update CallTime contacts with donations logged from NGP.
 
+## Raw Data
+
+We should avoid putting PII on Github, so I'm adding an explanation of the output required. I did not update the variable names, so exported data from NGP should work.
+Raw data fields to export from NGP: `VANID`, `Last`, `First`, `State/Province`, `Cell Phone`, `HomePhone`, `Preferred Phone`. Optional for now but used: `NoCall` (suppression flag)
+Raw data fields to export from CallTime: export the full call log
+
 ```
 I've started with a few raw data files. I exported these from NGP using the universe of people in the campaign's database and a few subsets of the CallTime logs.
 Raw Data/call_log_export_*.csv          (CallTime export)
@@ -172,7 +178,7 @@ Scripts 02 and 03 always read from `Data/` (the outputs of earlier scripts), so 
 | File | Format | Description |
 |---|---|---|
 | `Raw Data/call_log_export_*.csv` | Tab-separated, UTF-8 | CallTime call log export |
-| `Raw Data/ngp_full_export_*.txt` | Tab-separated, **UTF-16 LE** | NGP VAN full contact export |
+| `Raw Data/ngp_full_export_*.txt` | Tab-separated, **UTF-16 LE** | NGP VAN full contact export. Required columns: `VANID`, `Last`, `First`, `State/Province`, at least one of `Cell Phone` / `HomePhone` / `Preferred Phone`. Optional but used: `NoCall` (suppression flag). |
 | `Raw Data/StandardText*.txt` | Tab-separated, **UTF-16 LE** | NGP Standard Text export (name + phone + address; used for reference) |
 
 > The NGP files are UTF-16 LE (a common VAN export quirk). Opening them in a standard text editor or Excel without specifying encoding will show garbled characters. The scripts handle this automatically via `encoding='utf-16'`.
