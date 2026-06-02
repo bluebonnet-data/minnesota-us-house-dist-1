@@ -201,6 +201,8 @@ When implementing DNC detection, use keyword matching on the `NoteText` column i
 
 Future scripts should also link NGP data back to CallTime. It seems like CallTime does not auto-update contributions.  However, this should probably be in a different folder/sequence.
 
+3. **Duplicate notes** - we should add a check that we're not duplicating notes in the NGP upload. This may require an NGP download to compare a record in NGP to the notes we plan on adding. The code includes the date and time of the call, so it should be straightforward to identify duplicates. 
+
 ---
 
 ## Troubleshooting
