@@ -1,0 +1,7 @@
+Call ID	Date	Duration (seconds)	Contact ID	Contact NGP ID	Contact Name	Contact Phone	Contact Phone Type	Contact Phone is Primary	Contact Phone is Verified	Contact Phone is Bad	Campaign Phone	Outcome	Contribution Ask	Contribution Ask Result	Contribution Ask Amount	Pledged	Pledge Amount	Commitment Asks & Results	Commitments	Voicemail Template	Note	User	Contact Tags
+1	5/27/2026 16:17	84	10001	35	Will Levinson	16173083272	MOBILE				15075333771	Connected									only wants to focus on local races	Team Account	
+2	5/27/2026 16:17	6	10002		Dennis Coles	12127591058	MOBILE				15075333771	Voicemail								National Cold Calls		Team Account	
+3	5/27/2026 16:16	42	10003		Robert Diggs	17046185739	MOBILE				15075333771	Voicemail								National Cold Calls		Team Account	
+4	5/27/2026 16:15	36	10004		Cliff Harris	19135618358	MOBILE				15075333771	Wrong Number								National Cold Calls	republican	Team Account	
+5	5/27/2026 16:14	22	10005	8314	Gary Grice	14138592759	MOBILE				15075333771	Voicemail								National Cold Calls		Team Account	
+6	5/27/2026 16:12	5	10006		Corey Woods	19195814818	MOBILE				15075333771	Connected								National Cold Calls	JJ sent email with prospectus and path to victory memo.	Team Account	
