@@ -46,7 +46,22 @@ Raw Data/ngp_full_export_*.txt          (NGP full export, UTF-16 LE)
 ## Requirements
 
 - Python
-- Packages: `pandas`, `numpy` (both included in Anaconda base)
+- Packages listed in the repository root `requirements.txt`
+
+To set up a local environment with `uv`, run these commands from the repository root:
+
+```powershell
+uv venv
+uv pip install -r requirements.txt
+```
+
+If you prefer standard `venv` and `pip`, run:
+
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
 
 ---
 
