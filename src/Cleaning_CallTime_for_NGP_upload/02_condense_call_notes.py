@@ -41,15 +41,14 @@
 
 import pandas as pd
 import numpy as np
-import os
+
+from config import OUTPUT_DIR
 
 # ---------------------------------------------------------------------------
 # File paths
 # ---------------------------------------------------------------------------
-ROOT       = r"C:\Users\willl\Documents\bluebonnet 2026"
-INPUT_FILE = os.path.join(ROOT, "Data", "call_log_with_vanid.csv")
-OUTPUT_DIR = os.path.join(ROOT, "Data")
-OUTPUT_FILE = os.path.join(OUTPUT_DIR, "call_notes_condensed.csv")
+INPUT_FILE = OUTPUT_DIR / "call_log_with_vanid.csv"
+OUTPUT_FILE = OUTPUT_DIR / "call_notes_condensed.csv"
 
 # ---------------------------------------------------------------------------
 # Contribution / commitment columns to include when non-empty.
