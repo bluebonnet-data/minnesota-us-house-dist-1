@@ -37,6 +37,14 @@ data/
 
 Create the `Raw Data/` folder locally before running the pipeline and place exported source files there. The scripts create `Data/` when they write generated outputs.
 
+If you keep campaign data outside the repository, set `CALLTIME_NGP_DATA_ROOT` before running the scripts:
+
+```powershell
+$env:CALLTIME_NGP_DATA_ROOT = "C:\path\to\your\data-root"
+```
+
+That directory should contain the same `Raw Data/` and `Data/` subfolders shown above.
+
 ```
 I've started with a few raw data files. I exported these from NGP using the universe of people in the campaign's database and a few subsets of the CallTime logs.
 data/Raw Data/call_log_export_*.csv          (CallTime export)
