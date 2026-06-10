@@ -20,25 +20,42 @@ We should avoid putting PII on Github, so I'm adding an explanation of the outpu
 Raw data fields to export from NGP: `VANID`, `Last`, `First`, `State/Province`, `Cell Phone`, `HomePhone`, `Preferred Phone`. Optional for now but used: `NoCall` (suppression flag)
 Raw data fields to export from CallTime: export the full call log
 
+Do not commit raw exports or generated pipeline outputs. By default, the scripts read and write local files under the repository's ignored `data/` directory:
+
+```text
+data/
+  Raw Data/
+    call_log_export_20260528.csv
+    ngp_full_export_20260528.txt
+    ngp_notes_export_*.csv
+  Data/
+    call_log_with_vanid.csv
+    call_notes_condensed.csv
+    ngp_upload_ready.csv
+    ngp_upload_deduped.csv
+```
+
+Create the `Raw Data/` folder locally before running the pipeline and place exported source files there. The scripts create `Data/` when they write generated outputs.
+
 ```
 I've started with a few raw data files. I exported these from NGP using the universe of people in the campaign's database and a few subsets of the CallTime logs.
-Raw Data/call_log_export_*.csv          (CallTime export)
-Raw Data/ngp_full_export_*.txt          (NGP full export, UTF-16 LE)
+data/Raw Data/call_log_export_*.csv          (CallTime export)
+data/Raw Data/ngp_full_export_*.txt          (NGP full export, UTF-16 LE)
         │
         ▼
 01_match_calltime_to_ngp.py
         │
-        ▼  Data/call_log_with_vanid.csv
+        ▼  data/Data/call_log_with_vanid.csv
         │
         ▼
 02_condense_call_notes.py
         │
-        ▼  Data/call_notes_condensed.csv
+        ▼  data/Data/call_notes_condensed.csv
         │
         ▼
 03_format_ngp_upload.py
         │
-        ▼  Data/ngp_upload_ready.csv       ← upload this to NGP
+        ▼  data/Data/ngp_upload_ready.csv       ← upload this to NGP
 ```
 
 ---
@@ -179,12 +196,12 @@ Call Date: 5/27/2026 4:17 PM; Voicemail | Call Date: 5/28/2026 10:03 AM; Connect
 ## Updating for a New Call Log Export
 
 When a new CallTime export arrives:
-1. Place it in `Raw Data/`
+1. Place it in `data/Raw Data/`
 2. Update `CALLTIME_IN` at the top of `01_match_calltime_to_ngp.py`
 3. If a new NGP export is also available, update `NGP_IN` in script 01 as well
 4. Run all three scripts in order
 
-Scripts 02 and 03 always read from `Data/` (the outputs of earlier scripts), so they do not need path changes unless the NGP export changes.
+Scripts 02 and 03 always read from `data/Data/` (the outputs of earlier scripts), so they do not need path changes unless the NGP export changes.
 
 ---
 
@@ -192,9 +209,9 @@ Scripts 02 and 03 always read from `Data/` (the outputs of earlier scripts), so 
 
 | File | Format | Description |
 |---|---|---|
-| `Raw Data/call_log_export_*.csv` | Tab-separated, UTF-8 | CallTime call log export |
-| `Raw Data/ngp_full_export_*.txt` | Tab-separated, **UTF-16 LE** | NGP VAN full contact export. Required columns: `VANID`, `Last`, `First`, `State/Province`, at least one of `Cell Phone` / `HomePhone` / `Preferred Phone`. Optional but used: `NoCall` (suppression flag). |
-| `Raw Data/StandardText*.txt` | Tab-separated, **UTF-16 LE** | NGP Standard Text export (name + phone + address; used for reference) |
+| `data/Raw Data/call_log_export_*.csv` | Tab-separated, UTF-8 | CallTime call log export |
+| `data/Raw Data/ngp_full_export_*.txt` | Tab-separated, **UTF-16 LE** | NGP VAN full contact export. Required columns: `VANID`, `Last`, `First`, `State/Province`, at least one of `Cell Phone` / `HomePhone` / `Preferred Phone`. Optional but used: `NoCall` (suppression flag). |
+| `data/Raw Data/StandardText*.txt` | Tab-separated, **UTF-16 LE** | NGP Standard Text export (name + phone + address; used for reference) |
 
 > The NGP files are UTF-16 LE (a common VAN export quirk). Opening them in a standard text editor or Excel without specifying encoding will show garbled characters. The scripts handle this automatically via `encoding='utf-16'`.
 
