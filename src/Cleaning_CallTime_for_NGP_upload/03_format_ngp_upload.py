@@ -16,7 +16,8 @@
 #   NoteTags      — left blank
 #   IsPinned      — "No" for all rows (notes are not pinned by default)
 #   NoteText      — the full condensed note string from 02_condense_call_notes.py
-#   Suppressions  — "Do not call" if NGP's NoCall flag was set; blank otherwise
+#   Suppressions  — "Do not call" if NGP's NoCall flag was set or CallTime
+#                   notes indicate a likely DNC request; blank otherwise
 #
 # HOW NGP PROCESSES THE UPLOAD:
 #   Uploading notes APPENDS to existing notes — it does NOT replace them.
@@ -34,9 +35,11 @@
 #   Data/ngp_upload_ready.csv          — ready for bulk import into NGP VAN
 # =============================================================================
 
+import os
+import re
+
 import pandas as pd
 import numpy as np
-import os
 
 # ---------------------------------------------------------------------------
 # Configuration — edit these before running
@@ -53,6 +56,24 @@ OUTPUT_FILE     = os.path.join(ROOT, "Data", "ngp_upload_ready.csv")
 
 # Who is doing this upload — appears in NGP's note history
 ENTERED_BY = "Levinson, W"
+
+# Phrases in CallTime notes that likely mean the contact asked not to be called.
+# These matches are printed for human review before the upload file is saved.
+DNC_NOTE_PATTERNS = [
+    r"\bdo not call\b",
+    r"\bdon'?t call\b",
+    r"\bdo not phone\b",
+    r"\bdon'?t phone\b",
+    r"\bno phone\b",
+    r"\bno phone calls?\b",
+    r"\bno more calls?\b",
+    r"\brequested no calls?\b",
+    r"\bremove\s+(me|them|him|her)?\s*(from\s+)?(the\s+)?call(ing)?\s+list\b",
+    r"\btake\s+(me|them|him|her)?\s*(off|out of)\s+(the\s+)?call(ing)?\s+list\b",
+    r"\bstop call(ing)?\b",
+]
+
+DNC_NOTE_RE = re.compile("|".join(DNC_NOTE_PATTERNS), flags=re.IGNORECASE)
 
 # ===========================================================================
 # SECTION 1: Load condensed notes
@@ -135,20 +156,51 @@ matched["DateEntered"] = matched["latest_date"].apply(format_date)
 # ===========================================================================
 # SECTION 5: Build the Suppressions column
 # ===========================================================================
-# "Do not call" is NGP's standard suppression string. We apply it if the
-# contact's NGP record already had the NoCall flag set (pulled by
-# 01_match_calltime_to_ngp.py from the NGP export). In this dataset that flag
-# is almost never set, but the logic is here for future exports.
+# "Do not call" is NGP's standard suppression string. We apply it if either:
+#   1. The contact's NGP record already had NoCall set, or
+#   2. The CallTime note text includes a likely do-not-call request.
 
-matched["Suppressions"] = matched["has_nocall"].apply(
-    lambda flagged: "Do not call" if flagged else np.nan
+def note_requests_dnc(note_text):
+    """Return True when a CallTime note contains a likely DNC request."""
+    if pd.isna(note_text):
+        return False
+    return bool(DNC_NOTE_RE.search(str(note_text)))
+
+
+def is_nocall_flagged(value):
+    """Return True for common NGP export values that mean NoCall is set."""
+    if pd.isna(value):
+        return False
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y"}
+    return value == 1 or value is True
+
+
+matched["dnc_from_ngp"] = matched["has_nocall"].apply(is_nocall_flagged)
+matched["dnc_from_notes"] = matched["Notes"].apply(note_requests_dnc)
+matched["Suppressions"] = np.where(
+    matched["dnc_from_ngp"] | matched["dnc_from_notes"],
+    "Do not call",
+    np.nan,
 )
 
+n_ngp_suppressed = matched["dnc_from_ngp"].sum()
+n_note_suppressed = matched["dnc_from_notes"].sum()
 n_suppressed = matched["Suppressions"].notna().sum()
-if n_suppressed > 0:
-    print(f"  {n_suppressed} contact(s) flagged 'Do not call' in NGP -> Suppressions set")
-else:
-    print("  No contacts with NoCall flag -> Suppressions column will be blank")
+
+print(f"  {n_ngp_suppressed} contact(s) already flagged NoCall in NGP")
+print(f"  {n_note_suppressed} contact(s) flagged from CallTime note text")
+print(f"  {n_suppressed} total contact(s) will receive 'Do not call' suppression")
+
+if n_note_suppressed > 0:
+    print("\nReview contacts flagged from CallTime notes before upload:")
+    note_flagged = matched[matched["dnc_from_notes"]].copy()
+    for _, row in note_flagged.iterrows():
+        preview = str(row["Notes"])[:120]
+        if len(str(row["Notes"])) > 120:
+            preview += "..."
+        print(f"  VANID={int(row['VANID'])}  {row['Contact Name']}")
+        print(f"    Note: {preview}")
 
 # ===========================================================================
 # SECTION 6: Assemble the final upload DataFrame

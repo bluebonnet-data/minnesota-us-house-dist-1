@@ -155,7 +155,7 @@ Call Date: 5/27/2026 4:17 PM; Voicemail | Call Date: 5/28/2026 10:03 AM; Connect
 | `NoteTags` | Blank |
 | `IsPinned` | `No` |
 | `NoteText` | Full condensed note string from script 02 |
-| `Suppressions` | `Do not call` if NGP's NoCall flag is set; blank otherwise |
+| `Suppressions` | `Do not call` if NGP's NoCall flag is set or CallTime notes include a likely DNC request; blank otherwise |
 
 > **Important:** NGP bulk note upload **appends** notes — it does not replace existing ones. Each row in the upload file becomes a new note entry on the contact's record.
 
@@ -189,15 +189,15 @@ Scripts 02 and 03 always read from `Data/` (the outputs of earlier scripts), so 
 
 ### Do Not Call detection
 
-The current pipeline does **not** automatically detect or set DNC (Do Not Call) suppressions from call notes. The `Suppressions` column in `ngp_upload_ready.csv` is intentionally left blank for all rows in this version.
+Script 03 automatically sets `Suppressions = "Do not call"` from two DNC signal sources.
 
-There are two sources of DNC signals that a future version should handle:
+The two sources are:
 
-1. **Free-text notes** — callers sometimes record explicit requests in the `Note` field (e.g., "Requested no phone calls", "Do not call"). In this export, 3 contacts made such requests. These are uploaded as regular notes so NGP staff can see them, but the suppression is not set automatically.
+1. **NGP `NoCall` flag** - script 01 reads this flag from the NGP export and carries it through to the `no_call` column in `call_log_with_vanid.csv`.
 
-2. **NGP `NoCall` flag** — script 01 already reads this flag from the NGP export. Currently no contacts in this dataset have it set, but the logic is in place to carry it through to the `no_call` column in `call_log_with_vanid.csv`.
+2. **Free-text CallTime notes** - script 03 scans the condensed `Notes` text for likely DNC requests such as `"do not call"`, `"no phone"`, `"requested no calls"`, or `"remove from call list"`.
 
-When implementing DNC detection, use keyword matching on the `NoteText` column in script 03 (patterns like `"no phone"`, `"do not call"`, `"requested no"`) and set `Suppressions = "Do not call"` for matching rows. Print a list of affected contacts to the console before saving so they can be reviewed before upload.
+Contacts flagged from CallTime note text are printed to the console before the upload file is saved. Review those rows before importing to NGP, because keyword matching can produce false positives.
 
 Future scripts should also link NGP data back to CallTime. It seems like CallTime does not auto-update contributions.  However, this should probably be in a different folder/sequence.
 
