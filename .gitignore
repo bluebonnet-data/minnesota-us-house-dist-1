@@ -17,6 +17,7 @@ env/
 *.sqlite3
 data/*.csv
 data/*.xlsx
+data/**/*.txt
 
 # Jupyter
 .ipynb_checkpoints/
