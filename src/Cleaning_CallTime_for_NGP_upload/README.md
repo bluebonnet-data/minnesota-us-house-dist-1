@@ -1,6 +1,6 @@
 # CallTime → NGP VAN: Call Notes Pipeline
 
-This folder contains three Python scripts that take a CallTime phone-banking export and produce a file ready for bulk upload into NGP VAN. Run them in order: 01, 02, 03.
+This folder contains four Python scripts that take a CallTime phone-banking export and produce a deduplicated file ready for bulk upload into NGP VAN. Run them in order: 01, 02, 03, 04.
 
 ---
 
@@ -38,7 +38,17 @@ Raw Data/ngp_full_export_*.txt          (NGP full export, UTF-16 LE)
         ▼
 03_format_ngp_upload.py
         │
-        ▼  Data/ngp_upload_ready.csv       ← upload this to NGP
+        ▼  Data/ngp_upload_ready.csv       (intermediate; do not upload yet)
+        │
+        ▼
+04_check_duplicate_notes.py
+        │
+        ├─► Data/vanids_to_pull.csv        (use to export existing NGP notes)
+        ├─► Data/duplicate_check_manifest.json
+        ├─► Data/identified_duplicate_notes.csv
+        ├─► Data/possible_duplicate_notes.csv
+        │
+        ▼  Data/ngp_upload_deduped.csv     ← upload this file to NGP
 ```
 
 ---
@@ -48,11 +58,17 @@ Raw Data/ngp_full_export_*.txt          (NGP full export, UTF-16 LE)
 - Python
 - Packages: `pandas`, `numpy` (both included in Anaconda base)
 
+Install the dependencies in another Python environment with:
+
+```powershell
+python -m pip install -r requirements.txt
+```
+
 ---
 
 ## Running the Scripts
 
-Each script prints a progress summary and validation counts to the console. Review the console output before uploading to NGP — the validation section will flag any rows missing a VANID or NoteText.
+Each script prints a progress summary and validation counts to the console. Review the DNC matches from script 03 and both duplicate reports from script 04 before uploading the final deduped CSV to NGP.
 
 ---
 
@@ -143,7 +159,7 @@ Call Date: 5/27/2026 4:17 PM; Voicemail | Call Date: 5/28/2026 10:03 AM; Connect
 - `Data/call_notes_condensed.csv` — output of script 02
 - `Data/call_log_with_vanid.csv` — used to pull the most recent call date per contact and the NoCall flag
 
-**Output:** `Data/ngp_upload_ready.csv` — one row per matched contact, ready for NGP bulk import:
+**Output:** `Data/ngp_upload_ready.csv` — one row per matched contact. This is an intermediate file that must pass through script 04 before upload:
 
 | Column | Value |
 |---|---|
@@ -161,15 +177,70 @@ Call Date: 5/27/2026 4:17 PM; Voicemail | Call Date: 5/28/2026 10:03 AM; Connect
 
 ---
 
+### 04 — Check for Duplicate Notes (`04_check_duplicate_notes.py`)
+
+**What it does:** Compares the planned upload with notes already stored in NGP. Confirmed duplicates are removed from the final upload, while timestamp-only matches are preserved and reported for human review.
+
+Script 04 has two explicit commands because an NGP notes export must be pulled manually between them:
+
+1. Prepare the current upload:
+
+   ```powershell
+   python 04_check_duplicate_notes.py prepare
+   ```
+
+   This writes `Data/vanids_to_pull.csv` and `Data/duplicate_check_manifest.json`. It also removes prior duplicate reports and `ngp_upload_deduped.csv` so stale results cannot be mistaken for the current run.
+
+2. Use the new VANID list to export existing notes from NGP and save that export locally.
+3. Run the duplicate comparison with that specific export:
+
+   ```powershell
+   python 04_check_duplicate_notes.py dedupe `
+     --ngp-notes-file "Raw Data\ngp_notes_export_YYYYMMDD.csv"
+   ```
+
+> **Important:** The NGP notes export must have been created for the VANIDs in the **current** `Data/vanids_to_pull.csv`. The `dedupe` command never discovers an export automatically: `--ngp-notes-file` is required. It also verifies that `ngp_upload_ready.csv` has not changed since `prepare`; if it has, run `prepare` again and pull a new notes export.
+
+By default the NGP notes export must be comma-delimited UTF-8 and contain `VANID` and `NoteText`. Alternate columns, separators, encodings, or file paths can be supplied on the command line:
+
+```powershell
+python 04_check_duplicate_notes.py dedupe `
+  --ngp-notes-file "C:\path\to\notes.txt" `
+  --ngp-vanid-column "ContactVANID" `
+  --ngp-note-column "Notes" `
+  --ngp-separator tab `
+  --ngp-encoding utf-16
+```
+
+Confirmed duplicates match on normalized VANID and normalized full note text. Normalization is case-insensitive, applies Unicode compatibility normalization, trims the text, and collapses repeated whitespace. A matching VANID and embedded call timestamp alone is reported as a **possible duplicate**, but is not automatically removed.
+
+**Outputs:**
+
+| File | Purpose |
+|---|---|
+| `Data/vanids_to_pull.csv` | Contact list used to scope the NGP notes export |
+| `Data/duplicate_check_manifest.json` | Fingerprint proving which planned upload was used to create the VANID list |
+| `Data/identified_duplicate_notes.csv` | Confirmed duplicates removed from the upload |
+| `Data/possible_duplicate_notes.csv` | Timestamp matches requiring human review; these remain in the final upload |
+| `Data/ngp_upload_deduped.csv` | Final file to upload to NGP |
+
+The review reports are written even when they contain zero rows, so every run leaves an auditable result.
+
+---
+
 ## Updating for a New Call Log Export
 
 When a new CallTime export arrives:
 1. Place it in `Raw Data/`
 2. Update `CALLTIME_IN` at the top of `01_match_calltime_to_ngp.py`
 3. If a new NGP export is also available, update `NGP_IN` in script 01 as well
-4. Run all three scripts in order
+4. Run scripts 01, 02, and 03
+5. Run `python 04_check_duplicate_notes.py prepare` to create the VANID list and manifest
+6. Export existing NGP notes for those VANIDs and place the file in `Raw Data/`
+7. Run `python 04_check_duplicate_notes.py dedupe --ngp-notes-file "Raw Data\<export file>"`
+8. Review both duplicate reports, then upload `Data/ngp_upload_deduped.csv`
 
-Scripts 02 and 03 always read from `Data/` (the outputs of earlier scripts), so they do not need path changes unless the NGP export changes.
+Scripts 02, 03, and 04 read the outputs of earlier steps from `Data/`. Scripts 03 and 04 also support the `CALLTIME_NGP_ROOT` environment variable; script 04 accepts command-line overrides documented above.
 
 ---
 
@@ -179,15 +250,14 @@ Scripts 02 and 03 always read from `Data/` (the outputs of earlier scripts), so 
 |---|---|---|
 | `Raw Data/call_log_export_*.csv` | Tab-separated, UTF-8 | CallTime call log export |
 | `Raw Data/ngp_full_export_*.txt` | Tab-separated, **UTF-16 LE** | NGP VAN full contact export. Required columns: `VANID`, `Last`, `First`, `State/Province`, at least one of `Cell Phone` / `HomePhone` / `Preferred Phone`. Optional but used: `NoCall` (suppression flag). |
+| `Raw Data/ngp_notes_export_*.csv` | Comma-separated, UTF-8 by default | Existing NGP notes used by script 04. Required columns default to `VANID` and `NoteText` and can be configured. |
 | `Raw Data/StandardText*.txt` | Tab-separated, **UTF-16 LE** | NGP Standard Text export (name + phone + address; used for reference) |
 
 > The NGP files are UTF-16 LE (a common VAN export quirk). Opening them in a standard text editor or Excel without specifying encoding will show garbled characters. The scripts handle this automatically via `encoding='utf-16'`.
 
 ---
 
-## Known Limitations / Future Work
-
-### Do Not Call detection
+## Do Not Call Detection
 
 Script 03 automatically sets `Suppressions = "Do not call"` from two DNC signal sources.
 
@@ -199,9 +269,11 @@ The two sources are:
 
 Contacts flagged from CallTime note text are printed to the console before the upload file is saved. Review those rows before importing to NGP, because keyword matching can produce false positives.
 
-Future scripts should also link NGP data back to CallTime. It seems like CallTime does not auto-update contributions.  However, this should probably be in a different folder/sequence.
+## Known Limitations / Future Work
 
-3. **Duplicate notes** - we should add a check that we're not duplicating notes in the NGP upload. This may require an NGP download to compare a record in NGP to the notes we plan on adding. The code includes the date and time of the call, so it should be straightforward to identify duplicates. 
+The duplicate check can recognize equivalent full notes despite case and whitespace differences. It does not automatically remove a note based only on a matching call timestamp; those cases are deliberately left in `possible_duplicate_notes.csv` for review to avoid discarding legitimate distinct notes.
+
+Future scripts should also link NGP data back to CallTime. It seems like CallTime does not auto-update contributions. However, this should probably be in a different folder or sequence.
 
 ---
 

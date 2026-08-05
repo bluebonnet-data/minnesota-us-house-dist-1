@@ -32,48 +32,33 @@
 #                                        one row per call with Date and no_call
 #
 # OUTPUT:
-#   Data/ngp_upload_ready.csv          — ready for bulk import into NGP VAN
+#   Data/ngp_upload_ready.csv          — intermediate input to duplicate check
 # =============================================================================
 
 import os
-import re
 
-import pandas as pd
 import numpy as np
+import pandas as pd
+from pipeline_utils import find_dnc_phrase, is_nocall_flagged
 
 # ---------------------------------------------------------------------------
 # Configuration — edit these before running
 # ---------------------------------------------------------------------------
 
-ROOT        = r"C:\Users\willl\Documents\bluebonnet 2026"
+ROOT = os.environ.get(
+    "CALLTIME_NGP_ROOT",
+    r"C:\Users\willl\Documents\bluebonnet 2026",
+)
 
 # Input files
-CONDENSED_FILE  = os.path.join(ROOT, "Data", "call_notes_condensed.csv")
-CALL_LOG_FILE   = os.path.join(ROOT, "Data", "call_log_with_vanid.csv")
+CONDENSED_FILE = os.path.join(ROOT, "Data", "call_notes_condensed.csv")
+CALL_LOG_FILE = os.path.join(ROOT, "Data", "call_log_with_vanid.csv")
 
 # Output file
-OUTPUT_FILE     = os.path.join(ROOT, "Data", "ngp_upload_ready.csv")
+OUTPUT_FILE = os.path.join(ROOT, "Data", "ngp_upload_ready.csv")
 
 # Who is doing this upload — appears in NGP's note history
 ENTERED_BY = "Levinson, W"
-
-# Phrases in CallTime notes that likely mean the contact asked not to be called.
-# These matches are printed for human review before the upload file is saved.
-DNC_NOTE_PATTERNS = [
-    r"\bdo not call\b",
-    r"\bdon'?t call\b",
-    r"\bdo not phone\b",
-    r"\bdon'?t phone\b",
-    r"\bno phone\b",
-    r"\bno phone calls?\b",
-    r"\bno more calls?\b",
-    r"\brequested no calls?\b",
-    r"\bremove\s+(me|them|him|her)?\s*(from\s+)?(the\s+)?call(ing)?\s+list\b",
-    r"\btake\s+(me|them|him|her)?\s*(off|out of)\s+(the\s+)?call(ing)?\s+list\b",
-    r"\bstop call(ing)?\b",
-]
-
-DNC_NOTE_RE = re.compile("|".join(DNC_NOTE_PATTERNS), flags=re.IGNORECASE)
 
 # ===========================================================================
 # SECTION 1: Load condensed notes
@@ -113,14 +98,13 @@ call_log = pd.read_csv(CALL_LOG_FILE, usecols=["Contact ID", "Date", "no_call"])
 call_log["Date"] = pd.to_datetime(call_log["Date"])
 
 # Build a lookup: Contact ID -> most recent call date
-# Also capture whether ANY call to this contact has no_call == 1 (NGP's
-# DoNotCall flag). If so, we include a "Do not call" suppression in the upload.
+# Also capture whether ANY call to this contact has a truthy no_call value.
+# NGP exports may encode that flag as 1, True, Yes, or Y.
 date_lookup = (
-    call_log
-    .groupby("Contact ID")
+    call_log.groupby("Contact ID")
     .agg(
-        latest_date = ("Date",    "max"),   # most recent call date
-        has_nocall  = ("no_call", lambda x: (x == 1).any()),  # True if flagged
+        latest_date=("Date", "max"),  # most recent call date
+        has_nocall=("no_call", lambda values: values.map(is_nocall_flagged).any()),
     )
     .reset_index()
 )
@@ -145,11 +129,13 @@ if missing_dates > 0:
 # We format explicitly using month/day/year integers to avoid OS-specific
 # strftime zero-padding behavior.
 
+
 def format_date(dt):
     """Convert a datetime to M/D/YYYY string (no zero padding)."""
     if pd.isna(dt):
         return ""
     return f"{dt.month}/{dt.day}/{dt.year}"
+
 
 matched["DateEntered"] = matched["latest_date"].apply(format_date)
 
@@ -160,29 +146,14 @@ matched["DateEntered"] = matched["latest_date"].apply(format_date)
 #   1. The contact's NGP record already had NoCall set, or
 #   2. The CallTime note text includes a likely do-not-call request.
 
-def note_requests_dnc(note_text):
-    """Return True when a CallTime note contains a likely DNC request."""
-    if pd.isna(note_text):
-        return False
-    return bool(DNC_NOTE_RE.search(str(note_text)))
-
-
-def is_nocall_flagged(value):
-    """Return True for common NGP export values that mean NoCall is set."""
-    if pd.isna(value):
-        return False
-    if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "y"}
-    return value == 1 or value is True
-
-
 matched["dnc_from_ngp"] = matched["has_nocall"].apply(is_nocall_flagged)
-matched["dnc_from_notes"] = matched["Notes"].apply(note_requests_dnc)
-matched["Suppressions"] = np.where(
+matched["dnc_matched_phrase"] = matched["Notes"].apply(find_dnc_phrase)
+matched["dnc_from_notes"] = matched["dnc_matched_phrase"].notna()
+matched["Suppressions"] = None
+matched.loc[
     matched["dnc_from_ngp"] | matched["dnc_from_notes"],
-    "Do not call",
-    np.nan,
-)
+    "Suppressions",
+] = "Do not call"
 
 n_ngp_suppressed = matched["dnc_from_ngp"].sum()
 n_note_suppressed = matched["dnc_from_notes"].sum()
@@ -200,6 +171,7 @@ if n_note_suppressed > 0:
         if len(str(row["Notes"])) > 120:
             preview += "..."
         print(f"  VANID={int(row['VANID'])}  {row['Contact Name']}")
+        print(f"    Matched phrase: {row['dnc_matched_phrase']!r}")
         print(f"    Note: {preview}")
 
 # ===========================================================================
@@ -214,17 +186,19 @@ if n_note_suppressed > 0:
 # (already filtered above).
 matched["VANID_int"] = matched["VANID"].astype(int)
 
-upload = pd.DataFrame({
-    "VANID":        matched["VANID_int"],
-    "ContactName":  matched["Contact Name"],
-    "DateEntered":  matched["DateEntered"],
-    "EnteredBy":    ENTERED_BY,           # same for every row
-    "NoteCategory": np.nan,               # blank — no category applied
-    "NoteTags":     np.nan,               # blank — no tags applied
-    "IsPinned":     "No",                 # notes are not pinned by default
-    "NoteText":     matched["Notes"],
-    "Suppressions": matched["Suppressions"],
-})
+upload = pd.DataFrame(
+    {
+        "VANID": matched["VANID_int"],
+        "ContactName": matched["Contact Name"],
+        "DateEntered": matched["DateEntered"],
+        "EnteredBy": ENTERED_BY,  # same for every row
+        "NoteCategory": np.nan,  # blank — no category applied
+        "NoteTags": np.nan,  # blank — no tags applied
+        "IsPinned": "No",  # notes are not pinned by default
+        "NoteText": matched["Notes"],
+        "Suppressions": matched["Suppressions"],
+    }
+)
 
 # Reset the index so rows are numbered 0, 1, 2, ... in the output file
 upload = upload.reset_index(drop=True)
@@ -250,7 +224,9 @@ print(f"  Rows missing DateEntered: {missing_date}  (should be 0)")
 # Spot-check: show a few sample rows so it's easy to verify the format
 print("\nSample rows (first 5):")
 for _, row in upload.head(5).iterrows():
-    preview = str(row["NoteText"])[:80] + ("..." if len(str(row["NoteText"])) > 80 else "")
+    preview = str(row["NoteText"])[:80] + (
+        "..." if len(str(row["NoteText"])) > 80 else ""
+    )
     print(f"  VANID={row['VANID']}  {row['ContactName']}")
     print(f"    Date: {row['DateEntered']}  EnteredBy: {row['EnteredBy']}")
     print(f"    Note: {preview}")

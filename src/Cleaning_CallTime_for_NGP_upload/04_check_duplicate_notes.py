@@ -1,304 +1,351 @@
-# =============================================================================
-# 04_check_duplicate_notes.py
-#
-# PURPOSE:
-#   Before uploading call notes from CallTime into NGP VAN, check whether any
-#   of those notes are already present in NGP. This matters because NGP's bulk
-#   note upload APPENDS rather than replaces — running the same upload twice
-#   would silently post every note twice on each contact's record.
-#
-#   This script compares the notes we plan to upload against notes already in
-#   NGP and identifies any exact duplicates (same person AND same note text).
-#
-# CONTEXT FOR NEW READERS:
-#   This script is step 4 in a four-step pipeline:
-#     01_match_calltime_to_ngp.py   — matches CallTime contacts to NGP by VANID
-#     02_condense_call_notes.py     — collapses to one row per person
-#     03_format_ngp_upload.py       — formats for NGP bulk import
-#     04_check_duplicate_notes.py   — (this script) checks for duplicates
-#
-#   VANID is NGP's unique integer identifier for a contact. It is the bridge
-#   between the two systems and is the key we use to match people here.
-#
-# INPUTS:
-#   Data/ngp_upload_ready.csv          — the notes we plan to upload, produced
-#                                        by 03_format_ngp_upload.py
-#   Raw Data/ngp_notes_export_*.csv    — a manual export of notes already in
-#                                        NGP; this file must be exported from
-#                                        NGP before running this script
-#                                        (see Section 2 for format details)
-#
-# OUTPUT:
-#   Prints a summary of duplicates found to the terminal. The code to save a
-#   CSV of identified duplicates is written below but left commented out
-#   (see Section 4) until a permanent output path is decided.
-#
-# NOTE ON SCRIPT STRUCTURE:
-#   This script may need to be split into two scripts in the future because
-#   there is a manual human step in the middle of it:
-#     Script A — runs Section 1: loads the planned upload and outputs the
-#                VANID list so a human can pull the matching notes from NGP
-#                (either by manual export from the NGP UI or via the API)
-#     [human step] — export or retrieve notes from NGP for those VANIDs
-#     Script B — runs Sections 2–4: loads the NGP notes export and checks
-#                for duplicates
-#   For now, both halves are kept in one file for simplicity while the
-#   workflow is still being figured out.
-#
-# DUPLICATE DEFINITION:
-#   A planned note is a duplicate if NGP already has a note for the same VANID
-#   with identical text (exact string match after stripping leading/trailing
-#   whitespace from both sides).
-# =============================================================================
+"""Step 4: remove notes that already exist in NGP before bulk upload.
+
+The ``prepare`` command writes ``Data/vanids_to_pull.csv`` and fingerprints
+the planned upload. After the corresponding NGP notes export is obtained, the
+``dedupe`` command requires that export explicitly and refuses to continue if
+the planned upload changed after preparation.
+"""
+
+import argparse
+import hashlib
+import json
+import os
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
 
 import pandas as pd
-import os
-import glob
+from pipeline_utils import (
+    extract_call_timestamps,
+    normalize_note_text,
+    normalize_vanid,
+)
 
-# ---------------------------------------------------------------------------
-# Configuration — update these paths before running
-# ---------------------------------------------------------------------------
+DEFAULT_ROOT = os.environ.get(
+    "CALLTIME_NGP_ROOT",
+    r"C:\Users\willl\Documents\bluebonnet 2026",
+)
+DEFAULT_NGP_VANID_COLUMN = "VANID"
+DEFAULT_NGP_NOTE_COLUMN = "NoteText"
+MANIFEST_FILENAME = "duplicate_check_manifest.json"
+RESULT_FILENAMES = (
+    "identified_duplicate_notes.csv",
+    "possible_duplicate_notes.csv",
+    "ngp_upload_deduped.csv",
+)
 
-ROOT = r"C:\Users\willl\Documents\bluebonnet 2026"
-
-# The planned upload file produced by 03_format_ngp_upload.py
-UPLOAD_FILE = os.path.join(ROOT, "Data", "ngp_upload_ready.csv")
-
-# The manually exported NGP notes file. This must be pulled from NGP before
-# running this script. The glob pattern below picks the most recent file
-# matching that name pattern in the Raw Data folder.
-NGP_NOTES_GLOB = os.path.join(ROOT, "Raw Data", "ngp_notes_export_*.csv")
-
-# ---------------------------------------------------------------------------
-# Column name configuration for the NGP notes export.
-#
-# NGP's notes export format may vary depending on how it was pulled (UI export,
-# API, custom report). If the column names in the export differ from what is
-# listed here, update these constants rather than changing code throughout
-# the script. The two columns we need are the VANID and the note body.
-# ---------------------------------------------------------------------------
-NGP_COL_VANID    = "VANID"     # TODO: confirm exact column name in the NGP export
-NGP_COL_NOTETEXT = "NoteText"  # TODO: confirm exact column name in the NGP export
-
-
-# ===========================================================================
-# SECTION 1: Load the planned upload and extract unique VANIDs
-# ===========================================================================
-# This is the file we are about to import into NGP — one row per contact,
-# containing the full combined note string we want to post to their record.
-#
-# We extract the list of unique VANIDs from this file because that list is
-# what we need in order to pull the right notes out of NGP for comparison.
-# If we pulled ALL notes from NGP it would be a much larger export than
-# necessary; scoping it to just these VANIDs keeps things manageable.
-#
-# HOW TO USE THIS LIST:
-#   Two options depending on access:
-#     (a) Manual export — paste or upload the VANID list into NGP's "My List"
-#         tool, then export notes for that list to a CSV file.
-#     (b) API — pass the VANID list to the NGP VAN API notes endpoint to
-#         retrieve existing notes programmatically.
-#   Either way, the resulting notes file is what Section 2 loads.
-
-print("Loading planned upload...")
-upload = pd.read_csv(UPLOAD_FILE)
-print(f"  {len(upload)} notes planned for upload across {upload['VANID'].nunique()} contacts")
-
-# Extract the unique VANIDs. We cast to int to drop any decimal places that
-# pandas adds when reading integer-like values from CSV (e.g., 145647880.0
-# becomes 145647880), since NGP expects clean integers.
-unique_vanids = sorted(upload["VANID"].dropna().astype(int).unique().tolist())
-print(f"  {len(unique_vanids)} unique VANIDs — use this list to scope the NGP notes export")
-
-# Print the VANID list to the terminal so it can be copied directly into NGP
-# or passed to the API without needing to open any file.
-print(f"  VANIDs: {unique_vanids}")
-
-# Export the VANID list to a CSV so it can be uploaded to NGP or passed to
-# the API as a file rather than copy-pasted from the terminal. Each VANID
-# is on its own row under a "VANID" header. The output path is left as a
-# placeholder until we decide where this script's outputs should live.
-# pd.DataFrame({"VANID": unique_vanids}).to_csv("export_directory/vanids_to_pull.csv", index=False)
+UPLOAD_COLUMNS = [
+    "VANID",
+    "ContactName",
+    "DateEntered",
+    "EnteredBy",
+    "NoteCategory",
+    "NoteTags",
+    "IsPinned",
+    "NoteText",
+    "Suppressions",
+]
 
 
-# ===========================================================================
-# SECTION 2: Load the existing NGP notes export
-# ===========================================================================
-# This file must be exported manually from NGP before running this script.
-# It represents the notes that are already on contacts' records in NGP — the
-# baseline we compare against to detect duplicates.
-#
-# FORMAT NOTE:
-#   We expect a standard CSV (comma-delimited, UTF-8). However, NGP exports
-#   can vary — some are tab-delimited or encoded as UTF-16 LE (the same
-#   encoding as the NGP full contact export). If the file loads with garbled
-#   text or a parsing error, try adding sep='\t' or encoding='utf-16' to
-#   the read_csv call below.
-#
-# COLUMN NOTE:
-#   We only need two columns from this file: the VANID and the note text.
-#   If NGP uses different column names, update NGP_COL_VANID and
-#   NGP_COL_NOTETEXT in the configuration block above.
-
-print("\nLoading existing NGP notes export...")
-notes_files = sorted(glob.glob(NGP_NOTES_GLOB))
-
-if not notes_files:
-    # If no export file is found, we cannot check for duplicates. The script
-    # stops here rather than silently skipping the check, because proceeding
-    # without the baseline would defeat the purpose of running this script.
-    raise FileNotFoundError(
-        f"No NGP notes export file found matching: {NGP_NOTES_GLOB}\n"
-        "Export notes from NGP manually and place the file in the Raw Data folder."
-    )
-
-# Use the most recent matching file (sorted alphabetically — works when
-# file names contain a date in YYYYMMDD format)
-notes_file = notes_files[-1]
-print(f"  Using: {os.path.basename(notes_file)}")
-
-ngp_notes = pd.read_csv(notes_file)
-print(f"  {len(ngp_notes)} existing notes loaded from NGP")
-
-# Confirm the expected columns are present before proceeding. A clear error
-# here is much easier to debug than a silent KeyError or wrong-column merge.
-for col in [NGP_COL_VANID, NGP_COL_NOTETEXT]:
-    if col not in ngp_notes.columns:
-        raise KeyError(
-            f"Expected column '{col}' not found in {os.path.basename(notes_file)}.\n"
-            f"Columns present: {list(ngp_notes.columns)}\n"
-            "Update the NGP_COL_* constants at the top of this script to match."
+def validate_columns(frame: pd.DataFrame, required: list[str], source: str) -> None:
+    """Raise a readable error when an input file is missing required columns."""
+    missing = [column for column in required if column not in frame.columns]
+    if missing:
+        raise ValueError(
+            f"{source} is missing required column(s): {missing}. "
+            f"Columns present: {list(frame.columns)}"
         )
 
-# Keep only the columns we need; rename to internal names used throughout
-# the rest of this script so downstream code doesn't depend on NGP's column
-# naming conventions.
-ngp_notes = ngp_notes[[NGP_COL_VANID, NGP_COL_NOTETEXT]].rename(columns={
-    NGP_COL_VANID:    "vanid_existing",
-    NGP_COL_NOTETEXT: "note_existing",
-})
 
-# Drop rows where the note body OR the VANID is null — both are required for
-# a meaningful comparison. Dropping null VANIDs here also prevents a type
-# problem: if any VANID is null, pandas reads the whole column as float64,
-# which would make astype(str) produce "145647880.0" instead of "145647880"
-# and silently break every lookup against the upload file.
-ngp_notes = ngp_notes.dropna(subset=["vanid_existing", "note_existing"])
-print(f"  {len(ngp_notes)} existing notes after dropping nulls")
+def load_planned_upload(path: Path) -> pd.DataFrame:
+    """Load and validate the step-03 upload candidate."""
+    upload = pd.read_csv(path)
+    validate_columns(upload, UPLOAD_COLUMNS, str(path))
+
+    if upload["VANID"].isna().any():
+        count = int(upload["VANID"].isna().sum())
+        raise ValueError(f"{path} contains {count} row(s) with a blank VANID")
+
+    upload = upload.copy()
+    upload["_vanid_normalized"] = upload["VANID"].map(normalize_vanid)
+    upload["_note_normalized"] = upload["NoteText"].map(normalize_note_text)
+
+    empty_notes = upload["_note_normalized"].eq("")
+    if empty_notes.any():
+        raise ValueError(
+            f"{path} contains {int(empty_notes.sum())} row(s) with blank NoteText"
+        )
+    return upload
 
 
-# ===========================================================================
-# SECTION 3: Identify duplicates
-# ===========================================================================
-# A note in the planned upload is a duplicate if NGP already has a note for
-# the same VANID with identical text. We strip leading/trailing whitespace
-# from both sides before comparing, but otherwise require an exact match —
-# no case-folding, no punctuation normalization.
-#
-# Implementation: we build a set of (VANID, note_text) tuples from the
-# existing NGP notes, then check each planned row against that set. Set
-# lookup is O(1), so this scales even for large exports.
+def write_vanid_pull_file(upload: pd.DataFrame, output_path: Path) -> None:
+    """Write unique normalized VANIDs for scoping the manual NGP notes export."""
+    unique_vanids = sorted(
+        upload["_vanid_normalized"].unique(),
+        key=int,
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame({"VANID": unique_vanids}).to_csv(output_path, index=False)
 
-# Guard: every row in the upload should have a VANID — script 03 filters to
-# matched contacts only. But if a null VANID somehow slipped through, the
-# float->int conversion in the lookup below would raise a cryptic ValueError.
-# We catch it here with a clear message before doing any comparison.
-rows_missing_vanid = upload["VANID"].isna().sum()
-if rows_missing_vanid > 0:
-    raise ValueError(
-        f"{rows_missing_vanid} row(s) in the upload file have a null VANID. "
-        "All rows must have a VANID before running the duplicate check. "
-        "Re-run 03_format_ngp_upload.py and verify its output before continuing."
+
+def sha256_file(path: Path) -> str:
+    """Return a stable fingerprint for a file without loading it all at once."""
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def write_manifest(
+    upload: pd.DataFrame, upload_path: Path, manifest_path: Path
+) -> None:
+    """Record exactly which planned upload the VANID pull list represents."""
+    manifest = {
+        "created_at_utc": datetime.now(timezone.utc).isoformat(),
+        "upload_file": str(upload_path.resolve()),
+        "upload_sha256": sha256_file(upload_path),
+        "upload_rows": len(upload),
+        "unique_vanids": int(upload["_vanid_normalized"].nunique()),
+    }
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+
+def clear_previous_results(data_dir: Path) -> list[Path]:
+    """Remove generated results that no longer represent the prepared upload."""
+    removed = []
+    for filename in RESULT_FILENAMES:
+        path = data_dir / filename
+        if path.exists():
+            path.unlink()
+            removed.append(path)
+    return removed
+
+
+def validate_manifest(upload_path: Path, manifest_path: Path) -> dict:
+    """Ensure dedupe is using the exact upload that was prepared."""
+    if not manifest_path.exists():
+        raise ValueError(
+            f"Preparation manifest not found: {manifest_path}. "
+            "Run this script with the 'prepare' command first."
+        )
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    required = {"upload_file", "upload_sha256", "upload_rows", "unique_vanids"}
+    missing = sorted(required - manifest.keys())
+    if missing:
+        raise ValueError(f"Preparation manifest is missing field(s): {missing}")
+
+    if manifest["upload_file"] != str(upload_path.resolve()):
+        raise ValueError(
+            "The upload file path does not match the preparation manifest. "
+            "Run 'prepare' again for this upload file."
+        )
+
+    if manifest["upload_sha256"] != sha256_file(upload_path):
+        raise ValueError(
+            "ngp_upload_ready.csv changed after the VANID list was prepared. "
+            "Run 'prepare' again and pull a new NGP notes export."
+        )
+    return manifest
+
+
+def load_ngp_notes(
+    path: Path,
+    vanid_column: str,
+    note_column: str,
+    separator: str = ",",
+    encoding: str = "utf-8-sig",
+) -> pd.DataFrame:
+    """Load an NGP notes export and normalize its comparison fields."""
+    notes = pd.read_csv(path, sep=separator, encoding=encoding)
+    validate_columns(notes, [vanid_column, note_column], str(path))
+    notes = notes[[vanid_column, note_column]].dropna().copy()
+    notes = notes.rename(columns={vanid_column: "VANID", note_column: "NoteText"})
+    notes["_vanid_normalized"] = notes["VANID"].map(normalize_vanid)
+    notes["_note_normalized"] = notes["NoteText"].map(normalize_note_text)
+    notes = notes[notes["_note_normalized"].ne("")].copy()
+    notes["_call_timestamps"] = notes["NoteText"].map(extract_call_timestamps)
+    return notes
+
+
+def classify_upload_rows(
+    upload: pd.DataFrame,
+    ngp_notes: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Split planned rows into duplicates, possible duplicates, and clean rows."""
+    existing_pairs = set(
+        zip(ngp_notes["_vanid_normalized"], ngp_notes["_note_normalized"])
     )
 
-print("\nChecking for duplicates...")
+    timestamps_by_vanid: dict[str, set[str]] = {}
+    for vanid, timestamps in zip(
+        ngp_notes["_vanid_normalized"], ngp_notes["_call_timestamps"]
+    ):
+        timestamps_by_vanid.setdefault(vanid, set()).update(timestamps)
 
-# Build the set of (VANID, note_text) pairs already in NGP.
-# VANIDs are normalized to plain integer strings (e.g., "145647880") on both
-# sides. We cast through float first to handle cases where the CSV stored the
-# VANID as "145647880.0", then through int to drop the decimal, then to str.
-# This ensures the two sides always compare the same string representation
-# regardless of how each file happened to encode the VANID column.
-existing_pairs = set(
-    zip(
-        ngp_notes["vanid_existing"].apply(lambda x: str(int(float(x)))),
-        ngp_notes["note_existing"].str.strip(),
+    working = upload.copy()
+    working["is_duplicate"] = [
+        (vanid, note) in existing_pairs
+        for vanid, note in zip(
+            working["_vanid_normalized"], working["_note_normalized"]
+        )
+    ]
+
+    overlapping_timestamps: list[str] = []
+    for _, row in working.iterrows():
+        planned = extract_call_timestamps(row["NoteText"])
+        existing = timestamps_by_vanid.get(row["_vanid_normalized"], set())
+        overlapping_timestamps.append(", ".join(sorted(planned & existing)))
+    working["matching_call_timestamps"] = overlapping_timestamps
+
+    duplicate_mask = working["is_duplicate"]
+    possible_mask = ~duplicate_mask & working["matching_call_timestamps"].ne("")
+
+    duplicates = working.loc[duplicate_mask, UPLOAD_COLUMNS].copy()
+    duplicates["duplicate_reason"] = "same VANID and normalized NoteText"
+
+    possible = working.loc[possible_mask, UPLOAD_COLUMNS].copy()
+    possible["possible_duplicate_reason"] = "same VANID and call timestamp"
+    possible["matching_call_timestamps"] = working.loc[
+        possible_mask, "matching_call_timestamps"
+    ]
+
+    clean = working.loc[~duplicate_mask, UPLOAD_COLUMNS].copy()
+    return duplicates, possible, clean
+
+
+def write_results(
+    duplicates: pd.DataFrame,
+    possible: pd.DataFrame,
+    clean: pd.DataFrame,
+    output_dir: Path,
+) -> dict[str, Path]:
+    """Write review reports and the only CSV that should be uploaded to NGP."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    paths = {
+        "duplicates": output_dir / "identified_duplicate_notes.csv",
+        "possible": output_dir / "possible_duplicate_notes.csv",
+        "final": output_dir / "ngp_upload_deduped.csv",
+    }
+    duplicates.to_csv(paths["duplicates"], index=False, encoding="utf-8")
+    possible.to_csv(paths["possible"], index=False, encoding="utf-8")
+    clean.to_csv(paths["final"], index=False, encoding="utf-8")
+    return paths
+
+
+def add_upload_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--root", default=DEFAULT_ROOT, help="Folder containing Data and Raw Data"
     )
-)
-
-# For each planned note, check whether that (VANID, text) pair is in the set.
-# Same float->int->str normalization applied to the upload side for consistency.
-upload["is_duplicate"] = upload.apply(
-    lambda row: (
-        str(int(float(row["VANID"]))),
-        str(row["NoteText"]).strip(),
-    ) in existing_pairs,
-    axis=1,
-)
-
-duplicates  = upload[upload["is_duplicate"]].copy()
-clean       = upload[~upload["is_duplicate"]].copy()
-
-print(f"  Duplicates found:    {len(duplicates)}")
-print(f"  Non-duplicate notes: {len(clean)}")
+    parser.add_argument("--upload-file", help="Override Data/ngp_upload_ready.csv")
 
 
-# ===========================================================================
-# SECTION 4: Report results
-# ===========================================================================
-# Print each duplicate to the terminal so it can be reviewed immediately.
-# The code to save a CSV of duplicates is written below but commented out
-# until a permanent output directory is established.
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="command", required=True)
 
-if len(duplicates) == 0:
-    print("\nNo duplicates found. The planned upload is safe to import into NGP.")
-else:
-    print(f"\n{len(duplicates)} duplicate note(s) identified:")
-    for _, row in duplicates.iterrows():
-        # Truncate long notes in the terminal preview for readability
-        note_preview = str(row["NoteText"])[:100]
-        if len(str(row["NoteText"])) > 100:
-            note_preview += "..."
-        print(f"  VANID {row['VANID']} — {row['ContactName']}")
-        print(f"    Note: {note_preview}")
+    prepare = commands.add_parser(
+        "prepare",
+        help="Write the VANID pull list and fingerprint the planned upload",
+    )
+    add_upload_arguments(prepare)
 
-    # -----------------------------------------------------------------------
-    # Save the identified duplicates to a CSV for review.
-    # The output path is left as a placeholder until we decide where this
-    # script will live and where its outputs should go.
-    # -----------------------------------------------------------------------
+    dedupe = commands.add_parser(
+        "dedupe",
+        help="Compare a specific NGP notes export and write the final upload",
+    )
+    add_upload_arguments(dedupe)
+    dedupe.add_argument(
+        "--ngp-notes-file", required=True, help="Current NGP notes export"
+    )
+    dedupe.add_argument("--ngp-vanid-column", default=DEFAULT_NGP_VANID_COLUMN)
+    dedupe.add_argument("--ngp-note-column", default=DEFAULT_NGP_NOTE_COLUMN)
+    dedupe.add_argument(
+        "--ngp-separator",
+        choices=("comma", "tab"),
+        default="comma",
+        help="Delimiter used by the NGP notes export",
+    )
+    dedupe.add_argument("--ngp-encoding", default="utf-8-sig")
+    return parser
 
-    # duplicates.to_csv("export_directory/identified_duplicate_notes.csv", index=False, encoding="utf-8")
+
+def resolve_upload_paths(args: argparse.Namespace) -> tuple[Path, Path, Path]:
+    data_dir = Path(args.root) / "Data"
+    upload_path = (
+        Path(args.upload_file)
+        if args.upload_file
+        else data_dir / "ngp_upload_ready.csv"
+    )
+    return data_dir, upload_path, data_dir / MANIFEST_FILENAME
 
 
-# ===========================================================================
-# SECTION 5: Export non-duplicate notes for upload to NGP
-# ===========================================================================
-# The clean DataFrame contains only the notes that do not already exist in
-# NGP — these are safe to upload without creating duplicates.
-#
-# We drop the is_duplicate column before saving because it is an internal
-# working column added by this script and is not part of the NGP upload
-# schema. All other columns are preserved exactly as they appear in the
-# input file (ngp_upload_ready.csv, produced by 03_format_ngp_upload.py).
-#
-# OUTPUT FORMAT:
-#   Matches the output of 03_format_ngp_upload.py:
-#     - Standard CSV (comma-delimited, UTF-8)
-#     - Columns: VANID, ContactName, DateEntered, EnteredBy, NoteCategory,
-#                NoteTags, IsPinned, NoteText, Suppressions
-#     - No row index written to file (index=False)
-#   This file can be imported directly into NGP using the same bulk note
-#   import process as ngp_upload_ready.csv.
+def prepare_command(args: argparse.Namespace) -> int:
+    data_dir, upload_path, manifest_path = resolve_upload_paths(args)
+    vanid_path = data_dir / "vanids_to_pull.csv"
 
-print("\nExporting non-duplicate notes for NGP upload...")
+    print(f"Loading planned upload: {upload_path}")
+    upload = load_planned_upload(upload_path)
+    write_vanid_pull_file(upload, vanid_path)
+    removed_results = clear_previous_results(data_dir)
+    write_manifest(upload, upload_path, manifest_path)
+    print(
+        f"  {len(upload)} planned note(s) across {upload['_vanid_normalized'].nunique()} contact(s)"
+    )
+    print(f"  VANID pull list written to: {vanid_path}")
+    print(f"  Preparation manifest written to: {manifest_path}")
+    if removed_results:
+        print(f"  Cleared {len(removed_results)} result file(s) from the previous run")
+    print("\nExport existing NGP notes for exactly these VANIDs, then run:")
+    print("  04_check_duplicate_notes.py dedupe --ngp-notes-file <export.csv>")
+    return 0
 
-clean_export = clean.drop(columns=["is_duplicate"])
 
-clean_export.to_csv(
-    os.path.join(ROOT, "Data", "ngp_upload_deduped.csv"),
-    index=False,
-    encoding="utf-8",
-)
+def dedupe_command(args: argparse.Namespace) -> int:
+    data_dir, upload_path, manifest_path = resolve_upload_paths(args)
+    notes_path = Path(args.ngp_notes_file)
 
-print(f"  {len(clean_export)} rows written to Data/ngp_upload_deduped.csv")
+    print(f"Validating preparation manifest: {manifest_path}")
+    manifest = validate_manifest(upload_path, manifest_path)
+    upload = load_planned_upload(upload_path)
+    if len(upload) != manifest["upload_rows"]:
+        raise ValueError("Upload row count does not match the preparation manifest")
+
+    separator = "," if args.ngp_separator == "comma" else "\t"
+    print(f"\nLoading existing NGP notes: {notes_path}")
+    ngp_notes = load_ngp_notes(
+        notes_path,
+        args.ngp_vanid_column,
+        args.ngp_note_column,
+        separator=separator,
+        encoding=args.ngp_encoding,
+    )
+    print(f"  {len(ngp_notes)} usable existing note(s) loaded")
+
+    duplicates, possible, clean = classify_upload_rows(upload, ngp_notes)
+    paths = write_results(duplicates, possible, clean, data_dir)
+
+    print("\nDuplicate check complete:")
+    print(f"  Confirmed duplicates excluded: {len(duplicates)}")
+    print(f"  Possible duplicates to review: {len(possible)}")
+    print(f"  Rows in final upload:          {len(clean)}")
+    print(f"  Duplicate report: {paths['duplicates']}")
+    print(f"  Possible-duplicate report: {paths['possible']}")
+    print(f"  FINAL FILE TO UPLOAD: {paths['final']}")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    if args.command == "prepare":
+        return prepare_command(args)
+    return dedupe_command(args)
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (OSError, ValueError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
