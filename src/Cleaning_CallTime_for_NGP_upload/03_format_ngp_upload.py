@@ -36,20 +36,19 @@
 
 import pandas as pd
 import numpy as np
-import os
+
+from config import OUTPUT_DIR
 
 # ---------------------------------------------------------------------------
 # Configuration — edit these before running
 # ---------------------------------------------------------------------------
 
-ROOT        = r"C:\Users\willl\Documents\bluebonnet 2026"
-
 # Input files
-CONDENSED_FILE  = os.path.join(ROOT, "Data", "call_notes_condensed.csv")
-CALL_LOG_FILE   = os.path.join(ROOT, "Data", "call_log_with_vanid.csv")
+CONDENSED_FILE = OUTPUT_DIR / "call_notes_condensed.csv"
+CALL_LOG_FILE = OUTPUT_DIR / "call_log_with_vanid.csv"
 
 # Output file
-OUTPUT_FILE     = os.path.join(ROOT, "Data", "ngp_upload_ready.csv")
+OUTPUT_FILE = OUTPUT_DIR / "ngp_upload_ready.csv"
 
 # Who is doing this upload — appears in NGP's note history
 ENTERED_BY = "Levinson, W"

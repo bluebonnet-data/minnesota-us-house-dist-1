@@ -47,18 +47,15 @@
 
 import pandas as pd
 import numpy as np
-import os
+
+from config import OUTPUT_DIR, RAW_DATA_DIR
 
 # ---------------------------------------------------------------------------
 # File paths
 # ---------------------------------------------------------------------------
-ROOT        = r"C:\Users\willl\Documents\bluebonnet 2026"
-CALLTIME_IN = os.path.join(ROOT, "Raw Data", "call_log_export_20260528.csv")
-NGP_IN      = os.path.join(ROOT, "Raw Data", "ngp_full_export_20260528.txt")
-OUTPUT_DIR  = os.path.join(ROOT, "Data")
-OUTPUT_FILE = os.path.join(OUTPUT_DIR, "call_log_with_vanid.csv")
-
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+CALLTIME_IN = RAW_DATA_DIR / "call_log_export_20260528.csv"
+NGP_IN = RAW_DATA_DIR / "ngp_full_export_20260528.txt"
+OUTPUT_FILE = OUTPUT_DIR / "call_log_with_vanid.csv"
 
 # ===========================================================================
 # SECTION 1: Load data

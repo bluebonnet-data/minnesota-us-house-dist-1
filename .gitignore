@@ -15,8 +15,9 @@ env/
 *.xlsx
 *.db
 *.sqlite3
-data/*.csv
-data/*.xlsx
+data/**
+!data/
+!data/.gitkeep
 
 # Jupyter
 .ipynb_checkpoints/

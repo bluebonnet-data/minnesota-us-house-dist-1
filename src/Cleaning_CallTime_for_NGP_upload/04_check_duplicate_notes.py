@@ -52,22 +52,20 @@
 # =============================================================================
 
 import pandas as pd
-import os
-import glob
+
+from config import OUTPUT_DIR, RAW_DATA_DIR
 
 # ---------------------------------------------------------------------------
 # Configuration — update these paths before running
 # ---------------------------------------------------------------------------
 
-ROOT = r"C:\Users\willl\Documents\bluebonnet 2026"
-
 # The planned upload file produced by 03_format_ngp_upload.py
-UPLOAD_FILE = os.path.join(ROOT, "Data", "ngp_upload_ready.csv")
+UPLOAD_FILE = OUTPUT_DIR / "ngp_upload_ready.csv"
 
 # The manually exported NGP notes file. This must be pulled from NGP before
 # running this script. The glob pattern below picks the most recent file
 # matching that name pattern in the Raw Data folder.
-NGP_NOTES_GLOB = os.path.join(ROOT, "Raw Data", "ngp_notes_export_*.csv")
+NGP_NOTES_GLOB = "ngp_notes_export_*.csv"
 
 # ---------------------------------------------------------------------------
 # Column name configuration for the NGP notes export.
@@ -141,7 +139,7 @@ print(f"  VANIDs: {unique_vanids}")
 #   NGP_COL_NOTETEXT in the configuration block above.
 
 print("\nLoading existing NGP notes export...")
-notes_files = sorted(glob.glob(NGP_NOTES_GLOB))
+notes_files = sorted(RAW_DATA_DIR.glob(NGP_NOTES_GLOB))
 
 if not notes_files:
     # If no export file is found, we cannot check for duplicates. The script
@@ -155,7 +153,7 @@ if not notes_files:
 # Use the most recent matching file (sorted alphabetically — works when
 # file names contain a date in YYYYMMDD format)
 notes_file = notes_files[-1]
-print(f"  Using: {os.path.basename(notes_file)}")
+print(f"  Using: {notes_file.name}")
 
 ngp_notes = pd.read_csv(notes_file)
 print(f"  {len(ngp_notes)} existing notes loaded from NGP")
@@ -165,7 +163,7 @@ print(f"  {len(ngp_notes)} existing notes loaded from NGP")
 for col in [NGP_COL_VANID, NGP_COL_NOTETEXT]:
     if col not in ngp_notes.columns:
         raise KeyError(
-            f"Expected column '{col}' not found in {os.path.basename(notes_file)}.\n"
+            f"Expected column '{col}' not found in {notes_file.name}.\n"
             f"Columns present: {list(ngp_notes.columns)}\n"
             "Update the NGP_COL_* constants at the top of this script to match."
         )
@@ -296,7 +294,7 @@ print("\nExporting non-duplicate notes for NGP upload...")
 clean_export = clean.drop(columns=["is_duplicate"])
 
 clean_export.to_csv(
-    os.path.join(ROOT, "Data", "ngp_upload_deduped.csv"),
+    OUTPUT_DIR / "ngp_upload_deduped.csv",
     index=False,
     encoding="utf-8",
 )
