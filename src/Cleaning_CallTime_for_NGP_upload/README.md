@@ -224,7 +224,7 @@ Confirmed duplicates match on normalized VANID and normalized full note text. No
 | `Data/possible_duplicate_notes.csv` | Timestamp matches requiring human review; these remain in the final upload |
 | `Data/ngp_upload_deduped.csv` | Final file to upload to NGP |
 
-The review reports are written even when they contain zero rows, so every run leaves an auditable result.
+The review reports are written even when they contain zero rows, so every successful `dedupe` run leaves an auditable result.
 
 ---
 
